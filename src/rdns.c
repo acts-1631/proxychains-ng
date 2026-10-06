@@ -15,18 +15,30 @@
 
 static struct sockaddr_in rdns_server;
 
+static ssize_t rdns_daemon_exchange(struct at_msg *msg, size_t len) {
+	int fd = socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, 0);
+	ssize_t ret = -1;
+	if(fd == -1) return -1;
+	if(connect(fd, (void*)&rdns_server, sizeof(rdns_server))) goto out;
+	if(send(fd, msg, len, 0) != (ssize_t) len) goto out;
+	ret = recv(fd, msg, sizeof(*msg), 0);
+out:
+	close(fd);
+	return ret;
+}
+
 size_t rdns_daemon_get_host_for_ip(ip_type4 ip, char* readbuf) {
 	struct at_msg msg = {
 		.h.msgtype = ATM_GETNAME,
 		.h.datalen = htons(4),
 		.m.ip = ip,
 	};
-	int fd = socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, 0);
-	sendto(fd, &msg, sizeof(msg.h)+4, 0, (void*)&rdns_server, sizeof(rdns_server));
-	recvfrom(fd, &msg, sizeof msg, 0, (void*)0, (void*)0);
-	close(fd);
+	ssize_t received = rdns_daemon_exchange(&msg, sizeof(msg.h)+4);
+	if(received < (ssize_t) sizeof(msg.h) || msg.h.msgtype != ATM_GETNAME) return 0;
 	msg.h.datalen = ntohs(msg.h.datalen);
-	if(!msg.h.datalen || msg.h.datalen > 256) return 0;
+	if(!msg.h.datalen || msg.h.datalen > MSG_LEN_MAX ||
+	   received != (ssize_t) (sizeof(msg.h)+msg.h.datalen) ||
+	   memchr(msg.m.host, 0, msg.h.datalen) != &msg.m.host[msg.h.datalen-1]) return 0;
 	memcpy(readbuf, msg.m.host, msg.h.datalen);
 	return msg.h.datalen - 1;
 }
@@ -38,11 +50,10 @@ static ip_type4 rdns_daemon_get_ip_for_host(char* host, size_t len) {
 	if(len >= 256) return IPT4_INT(-1);
 	memcpy(msg.m.host, host, len+1);
 	msg.h.datalen = htons(len+1);
-	int fd = socket(AF_INET, SOCK_DGRAM|SOCK_CLOEXEC, 0);
-	sendto(fd, &msg, sizeof(msg.h)+len+1, 0, (void*)&rdns_server, sizeof(rdns_server));
-	recvfrom(fd, &msg, sizeof msg, 0, (void*)0, (void*)0);
-	close(fd);
-	if(ntohs(msg.h.datalen) != 4) return IPT4_INT(-1);
+	ssize_t received = rdns_daemon_exchange(&msg, sizeof(msg.h)+len+1);
+	if(received != (ssize_t) (sizeof(msg.h)+sizeof(ip_type4)) ||
+	   msg.h.msgtype != ATM_GETIP || ntohs(msg.h.datalen) != sizeof(ip_type4))
+		return IPT4_INT(-1);
 	return msg.m.ip;
 }
 
@@ -96,4 +107,3 @@ ip_type4 rdns_get_ip_for_host(char* host, size_t len) {
 			abort();
 	}
 }
-
