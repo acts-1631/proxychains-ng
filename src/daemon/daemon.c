@@ -33,6 +33,10 @@ static sblist *hostnames;
 static unsigned remote_subnet;
 static const struct server* server;
 
+#define DEFAULT_MAX_MAPPINGS 65536U
+#define MAX_MAPPING_COUNT 0xFFFFFFU
+static size_t max_mappings = DEFAULT_MAX_MAPPINGS;
+
 #ifndef CONFIG_LOG
 #define CONFIG_LOG 1
 #endif
@@ -85,9 +89,10 @@ static int usage(char *a0) {
 	dprintf(2,
 		"Proxychains-NG remote dns daemon\n"
 		"--------------------------------\n"
-		"usage: %s -i listenip -p port -r remotesubnet\n"
+		"usage: %s -i listenip -p port -r remotesubnet -m maxmappings\n"
 		"all arguments are optional.\n"
-		"by default listenip is 127.0.0.1, port 1053 and remotesubnet 224.\n\n", a0
+		"by default listenip is 127.0.0.1, port 1053, remotesubnet 224,\n"
+		"and maxmappings is %u.\n\n", a0, DEFAULT_MAX_MAPPINGS
 	);
 	return 1;
 }
@@ -113,7 +118,7 @@ char *host_from_ip(ip_type4 internalip) {
 ip_type4 get_ip_from_index(unsigned index) {
 	ip_type4 ret;
 	index++; // so we can start at .0.0.1
-	if(index > 0xFFFFFF)
+	if(index > MAX_MAPPING_COUNT)
 		return IPT4_INVALID;
 	ret.octet[0] = remote_subnet & 0xFF;
 	ret.octet[1] = (index & 0xFF0000) >> 16;
@@ -125,6 +130,8 @@ ip_type4 get_ip_from_index(unsigned index) {
 ip_type4 get_ip(char* hn) {
 	htab_value *v = htab_find(ip_lookup_table, hn);
 	if(v) return get_ip_from_index(v->n);
+	if(sblist_getsize(hostnames) >= max_mappings)
+		return IPT4_INVALID;
 	char *n = strdup(hn);
 	if(!n) return IPT4_INVALID;
 	if(!sblist_add(hostnames, &n)) {
@@ -144,7 +151,7 @@ int main(int argc, char** argv) {
 	const char *listenip = "127.0.0.1";
 	unsigned port = 1053;
 	remote_subnet = 224;
-	while((ch = getopt(argc, argv, ":r:i:p:")) != -1) {
+	while((ch = getopt(argc, argv, ":r:i:p:m:")) != -1) {
 		switch(ch) {
 			case 'r':
 				remote_subnet = atoi(optarg);
@@ -155,6 +162,21 @@ int main(int argc, char** argv) {
 			case 'p':
 				port = atoi(optarg);
 				break;
+			case 'm': {
+				char *end;
+				unsigned long value;
+
+				errno = 0;
+				value = strtoul(optarg, &end, 10);
+				if(errno || *end || !value || value > MAX_MAPPING_COUNT) {
+					dprintf(2,
+						"error: maxmappings must be between 1 and %u\n",
+						MAX_MAPPING_COUNT);
+					return usage(argv[0]);
+				}
+				max_mappings = value;
+				break;
+			}
 			case ':':
 				dprintf(2, "error: option -%c requires an operand\n", optopt);
 				/* fall through */
